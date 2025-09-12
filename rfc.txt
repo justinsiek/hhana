@@ -1,0 +1,117 @@
+hhana (Hand History Analysis & Node Aggregation)
+
+##Summary
+
+Build a poker bot that uses MCCFR as a baseline, taking into account exploit signals generated
+through hand history exploits (more info in How Actions Are Determined section)
+
+##How Actions Are Determined:
+
+baseline CFR mix = π0(a|node,hand)
+E(a) = exploit signal
+Compute adjusted policy with a softmax over utility boosts:
+π(a) ∝ π0(a) · exp(clamp(E(a)/λ, −C, C))
+λ (bb) controls aggressiveness; C caps deviation (e.g., C=1).
+
+This calculation avoids overcommitting to a single action if it is an exploit, tunable with λ
+
+
+## Poker Abstraction (What the solver sees)
+Preflop:
+  - Position (SB / BB)
+  - Facing State (Unopened, Limped, Open[s/m/l], 3Bet[s/jam], 4bet[s/jam])
+    - for 3bet, maybe cut down buckets? these buckets explode tree
+  - Pot Class (SRP/3BP/4BP)
+  - Effective Stack Size Buckets (0-40bb, 40-70bb, 70-120bb)
+  - Static Rules:
+    - Raise Cap: preflop capped at 4bet, no 5bet except jam
+  - Hand Buckets
+    - premium (AA/KK/QQ/AKs)
+    - strong (JJ/TT/AQs/AKo/KQs)
+    - mid_pair (99-66)
+    - low_pair (55-22)
+    - suited_broadway (AJs, ATs, KJs, KTs, QJs, QTs, JTs)
+    - offsuit_broadway (KQo-KTo, QJo, QTo, JTo)
+    - suited_connector (T9s-54s, A5s, A4s)
+    - Axs (Axs not above)
+    - Axo (Axo not above)
+    - suited_misc
+    - offsuit_misc
+Postflop:
+  - Position (IP / OOP)
+  - Pot Class (SRP / 3BP / 4BP)
+  - Street (Flop / Turn / River)
+  - Line (vs_check / vs_bet[s/p/jam] / vs_raise[s/jam])
+  - Board Buckets:
+    - high_dry (a/k high rainbow, unpaired, low connectivity)
+    - mid_dry (q/j high rainbow, unpaired, low connectivity)
+    - low_dry (t or lower high, rainbow, unpaired, low connectivty)
+    - paired
+    - monotone (3 (flop) or 4 (turn) same suit)
+    - 2tone_connected (2 suits, connected)
+    - dynamic 
+  - Hand Buckets:
+    - nuts (high straight, nut/near nut flush, boat, quads)
+    - set 
+    - two_pair
+    - over_pair
+    - top_pair_strong (top pair with strong kicker)
+    - top_pair_weak (top pair weak kicker)
+    - middle_pair
+    - under_pair
+    - combo_draw (open ender/flush draw, maybe also draw + overcards)
+    - strong_draw (open ender/flush draw)
+    - weak_draw (gutshot / bdfd)
+    - air
+  - Static Rules:
+    - Raise Caps: 1 raise round per street
+    - Jam enabled if stack pot ratio is small enough
+
+
+##Technical Implementation Roadmap:
+
+Site Adapter:
+- Site adapter to connect bot to Replay Poker
+- Requirements:
+  - Data Capture:
+    - Detect turn start/end
+    - Detect position
+    - Detect opponent action (fold, check, call, bet, raise)
+      - Detect bet/raise size
+    - Detect stacks
+    - Detect hole cards 
+    - Detect board cards
+    - Detect street
+    - Detect pot size
+    - Optional: to_call, min_raise amounts
+  - Action Execution:
+    - Execute actions recieved from bot 
+      - Main difficulty here is with inputing custom raise sizes
+        - Workaround: only use buttons, not slider
+  - Shadow Mode
+    - For QA
+    - Reads state, builds node key, runs policy, picks action/size, but does NOT click
+    - Logs everything
+      - state
+      - node key
+      - sanity flags
+
+MCCFR HU Baseline:
+- Baseline for bot
+- Main Functions:
+  - node_key(state) -> str 
+    - Purpose: produce the node key of the current state, to lookup the baseline table
+    - Output: node_key (not including hand_buckets since exploits are per node)
+      - Preflop node_key: PF | position(SB/BB) | facing(Unopened | Limped | Open[s/m/l] | 3Bet[s/jam] | 4Bet[s/jam]) | pot_class(SRP/3BP/4BP) | stack_bucket(0–40 | 40–70 | 70–120)
+      - Postflop node_key: POST | role(IP/OOP) | pot(SRP/3BP/4BP) | street(F/T/R) | line(vs_check | vs_bet[s|p|jam] | facing_raise[s/jam] | board_bucket)
+  - preflop_hand_bucket(hand) -> str
+    - Purpose: Classify hand into preflop hand buckets
+    - Output: Bucket label string (premium, strong, suited_connector, offsuit_misc, etc)
+  - postflop_hand_bucket(hole, board, street) -> str 
+    - Purpose: Classify hand into postflop hand buckets (ranked for precedence e.g two_pair and weak_draw -> two_pair)
+  - policy(node_key, hand_bucket) -> dict[action, prob]
+    - Purpose: Fetch baseline action distribution from precomputed MCCFR strategy tables
+    - Output: Dictionary mapping legal abstract actions to probabilities summing to 1
+  
+  
+    
