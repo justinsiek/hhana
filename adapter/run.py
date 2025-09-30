@@ -6,111 +6,102 @@ AUTH_PATH = Path(__file__).with_name("auth.json")
 REPLAY_URL = "https://www.casino.org/replaypoker/"
 
 
-def setup_cdp_console_listener(page: Page, page_name: str = "Page") -> CDPSession | None:
-    """
-    Set up console listener using Chrome DevTools Protocol (CDP).
-    This captures console messages that may be intercepted by libraries like Bugsnag.
-    """
+def format_value(cdp: CDPSession, obj: dict, depth: int = 0, max_depth: int = 10) -> str:
+    """Recursively format console values, expanding objects and arrays"""
+    if depth >= max_depth:
+        return "..."
+    
+    obj_type = obj.get("type")
+    
+    # Simple types
+    if obj_type == "string":
+        return f'"{obj.get("value", "")}"'
+    if obj_type in ("number", "boolean", "undefined"):
+        return str(obj.get("value", ""))
+    if obj.get("subtype") == "null":
+        return "null"
+    
+    # Complex types - fetch properties
+    object_id = obj.get("objectId")
+    if not object_id:
+        return obj.get("description", "Object")
+    
     try:
-        cdp = page.context.new_cdp_session(page)
+        props = cdp.send("Runtime.getProperties", {"objectId": object_id, "ownProperties": True})["result"]
         
-        # Enable Runtime and Log domains
-        cdp.send("Runtime.enable")
-        cdp.send("Log.enable")
+        # Array
+        if obj.get("subtype") == "array":
+            items = [(int(p["name"]), format_value(cdp, p["value"], depth + 1, max_depth)) 
+                     for p in props if p["name"].isdigit() and int(p["name"]) < 15]
+            items.sort()
+            return f"[{', '.join(v for _, v in items)}]"
         
-        def handle_console_api(params: dict) -> None:
-            """Handle console.log/warn/error/etc calls"""
-            msg_type = params.get("type", "log")
-            args = params.get("args", [])
-            
-            # Extract message text from console arguments
-            parts = []
-            for arg in args:
-                if arg.get("type") == "string":
-                    parts.append(arg.get("value", ""))
-                elif arg.get("description"):
-                    parts.append(arg.get("description"))
-                elif arg.get("value") is not None:
-                    parts.append(str(arg.get("value")))
-            
-            message = " ".join(parts)
-            if message:
-                print(f"[{page_name} - {msg_type}] {message}", flush=True)
-        
-        def handle_log_entry(params: dict) -> None:
-            """Handle additional log entries"""
-            entry = params.get("entry", {})
-            level = entry.get("level", "log")
-            text = entry.get("text", "")
-            if text:
-                print(f"[{page_name} - {level}] {text}", flush=True)
-        
-        cdp.on("Runtime.consoleAPICalled", handle_console_api)
-        cdp.on("Log.entryAdded", handle_log_entry)
-        
-        print(f"✓ CDP listener attached to {page_name}", flush=True)
-        return cdp
-    except Exception as e:
-        print(f"✗ Failed to attach CDP listener to {page_name}: {e}", flush=True)
-        return None
+        # Object
+        items = [f"{p['name']}: {format_value(cdp, p['value'], depth + 1, max_depth)}" 
+                 for p in props[:15] if p["name"] not in ("__proto__", "constructor") and not p.get("get")]
+        return f"{{{', '.join(items)}}}"
+    
+    except Exception:
+        return obj.get("description", "Object")
+
+
+def setup_console_listener(page: Page, name: str) -> CDPSession:
+    """Set up CDP console listener for a page"""
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("Runtime.enable")
+    cdp.send("Log.enable")
+    
+    cdp.on("Runtime.consoleAPICalled", 
+           lambda p: print(f"[{name} - {p['type']}] {' '.join(format_value(cdp, arg) for arg in p['args'])}", flush=True))
+    cdp.on("Log.entryAdded", 
+           lambda p: print(f"[{name} - {p['entry']['level']}] {p['entry']['text']}", flush=True) if p['entry']['text'] else None)
+    
+    print(f"✓ Listener attached to {name}", flush=True)
+    return cdp
 
 
 def main() -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-        storage_state = str(AUTH_PATH) if AUTH_PATH.exists() else None
-        context = browser.new_context(storage_state=storage_state)
-        
+        context = browser.new_context(storage_state=str(AUTH_PATH) if AUTH_PATH.exists() else None)
         cdp_sessions = []
         
-        # Attach CDP listener to all new pages immediately when created
-        def handle_new_page(page: Page) -> None:
-            page_num = len(context.pages)
-            print(f"\n! New page detected (#{page_num})", flush=True)
-            cdp = setup_cdp_console_listener(page, f"Page-{page_num}")
-            if cdp:
-                cdp_sessions.append(cdp)
+        # Auto-attach listeners to new pages
+        def handle_page(page: Page):
+            print(f"\n! New page #{len(context.pages)}", flush=True)
+            cdp_sessions.append(setup_console_listener(page, f"Page-{len(context.pages)}"))
         
-        context.on("page", handle_new_page)
+        context.on("page", handle_page)
         
-        # Open Replay Poker main page
+        # Open main page
         page = context.new_page()
         page.goto(REPLAY_URL, wait_until="domcontentloaded")
         
         print("\n" + "="*70, flush=True)
-        print("Opened Replay Poker. Click a table to open it in a new tab.", flush=True)
+        print("Waiting for table to open...", flush=True)
         print("="*70 + "\n", flush=True)
         
-        # Wait for table page to open
+        # Wait for table page
         try:
             table_page = context.wait_for_event("page", timeout=120000)
-            print(f"\n✓ Table page opened: {table_page.url}", flush=True)
-        except TimeoutError:
-            print("No new tab detected within 2 minutes. Exiting.", flush=True)
+            table_page.bring_to_front()
+        except (TimeoutError, Exception):
+            print("No table opened", flush=True)
             return
         
-        # Bring table to front
-        try:
-            table_page.bring_to_front()
-        except Exception:
-            pass
+        print(f"\n✓ Table: {table_page.url}\n", flush=True)
         
-        print("\n" + "="*70, flush=True)
-        print("🎯 Console messages will appear below:", flush=True)
-        print("="*70 + "\n", flush=True)
-        
-        # Keep running and processing events
+        # Keep running
         try:
             while True:
                 table_page.wait_for_timeout(1000)
         except KeyboardInterrupt:
-            print("\nStopping...", flush=True)
+            pass
         finally:
-            # Clean up CDP sessions
             for cdp in cdp_sessions:
                 try:
                     cdp.detach()
-                except Exception:
+                except:
                     pass
 
 
