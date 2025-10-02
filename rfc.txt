@@ -106,9 +106,9 @@ Table Generation:
     - Iterations: target 1000+ iterations for convergence per spot
     - Bet Sizing Abstractions:
       - Preflop: limps, open[2.5bb/3.5bb/5bb], 3bet[8bb/jam], 4bet[20bb/jam]
-      - Postflop: check, bet[33%pot/75%pot/jam], raise[2.5x/jam]
+      - Postflop: check, bet[50%pot/100%pot/jam], raise[2.5x/jam]
     - Stack Size Buckets: Generate separate trees for each effective stack bucket
-      - 0-40bb (short-stack), 40-70bb (mid-stack), 70-120bb (deep-stack)
+      - 0-40bb (short-stack), 41-70bb (mid-stack), 71+bb (deep-stack)
     - Pot Classes: SRP (single raised pot), 3BP (3bet pot), 4BP (4bet pot)
     - Static Rules Enforcement:
       - Preflop: capped at 4bet, no 5bet except jam
