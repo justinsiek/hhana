@@ -2,12 +2,12 @@ hhana (Hand History Analysis & Node Aggregation)
 
 ##Summary
 
-Build a poker bot that uses MCCFR as a baseline, taking into account exploit signals generated
+Build a poker bot that uses TexasSolver decision table as a baseline, taking into account exploit signals generated
 through hand history exploits (more info in How Actions Are Determined section)
 
 ##How Actions Are Determined:
 
-baseline CFR mix = π0(a|node,hand)
+baseline decision table mix = π0(a|node,hand)
 E(a) = exploit signal
 Compute adjusted policy with a softmax over utility boosts:
 π(a) ∝ π0(a) · exp(clamp(E(a)/λ, −C, C))
@@ -96,22 +96,183 @@ Site Adapter:
       - node key
       - sanity flags
 
-MCCFR HU Baseline:
-- Baseline for bot
-- Main Functions:
+TexasSolver HU Baseline Decision Table:
+- Purpose: Generate GTO baseline strategies using TexasSolver engine, then provide efficient lookup
+- Pipeline: Configure → Solve → Aggregate → Store → Query
+
+Table Generation:
+  - Solver Configuration:
+    - Use TexasSolver CFR engine (MCCFR or DiscountedCFR)
+    - Iterations: target 1000+ iterations for convergence per spot
+    - Bet Sizing Abstractions:
+      - Preflop: limps, open[2.5bb/3.5bb/5bb], 3bet[8bb/jam], 4bet[20bb/jam]
+      - Postflop: check, bet[33%pot/75%pot/jam], raise[2.5x/jam]
+    - Stack Size Buckets: Generate separate trees for each effective stack bucket
+      - 0-40bb (short-stack), 40-70bb (mid-stack), 70-120bb (deep-stack)
+    - Pot Classes: SRP (single raised pot), 3BP (3bet pot), 4BP (4bet pot)
+    - Static Rules Enforcement:
+      - Preflop: capped at 4bet, no 5bet except jam
+      - Postflop: 1 raise round per street max
+  
+  - Preflop Game Tree Generation:
+    - Dimensions: Position × Facing State × Pot Class × Stack Bucket
+    - Generate solver tree for each combination:
+      Position: SB, BB
+      Facing State: Unopened, Limped, Open_s, Open_m, Open_l, 3Bet_s, 3Bet_jam, 4Bet_s, 4Bet_jam
+      Pot Class: SRP (unopened/limped/opens), 3BP (3bet spots), 4BP (4bet spots)
+      Stack Bucket: 0-40bb, 40-70bb, 70-120bb
+    - Example Trees to Solve:
+      - SB|Unopened|SRP|40-70bb → solve with [fold/limp/open_s/open_m/open_l]
+      - BB|Open_m|SRP|40-70bb → solve with [fold/call/3bet_s/3bet_jam]
+      - SB|3Bet_s|3BP|40-70bb → solve with [fold/call/4bet_s/4bet_jam]
+      - BB|4Bet_s|4BP|40-70bb → solve with [fold/call/jam]
+    - Total Preflop Trees: 2 positions × ~9 facing states × 3 stack buckets ≈ 54 trees
+      (some combinations invalid, e.g., BB can't face "Unopened")
+  
+  - Postflop Game Tree Generation:
+    - Dimensions: Position × Pot Class × Street × Line × Board Bucket × Stack Bucket
+    - Generate solver tree for each combination:
+      Position: IP, OOP
+      Pot Class: SRP, 3BP, 4BP
+      Street: Flop, Turn, River
+      Line: vs_check, vs_bet_s, vs_bet_p, vs_bet_jam, vs_raise_s, vs_raise_jam
+      Board Bucket: high_dry, mid_dry, low_dry, paired, monotone, 2tone_connected, dynamic
+      Stack Bucket: 0-40bb, 40-70bb, 70-120bb (SPR-based, not raw stacks)
+    - Example Trees to Solve:
+      - IP|SRP|Flop|vs_check|high_dry|40-70bb → solve with [check/bet_s/bet_p/bet_jam]
+      - OOP|SRP|Flop|vs_bet_p|monotone|40-70bb → solve with [fold/call/raise_s/raise_jam]
+      - IP|3BP|Turn|vs_raise_s|2tone_connected|0-40bb → solve with [fold/call/jam]
+    - Total Postflop Trees: 2 positions × 3 pot classes × 3 streets × 6 lines × 7 board buckets × 3 SPR buckets
+      = ~2268 trees (prune invalid combos like "can't raise on river if already raised")
+    - Board Aggregation:
+      - Sample 20-50 representative boards per board_bucket
+      - Solve each, then average strategies across boards within bucket
+  
+  - Solving Process:
+    - For each tree configuration:
+      1. Build TexasSolver game tree with proper abstractions
+      2. Run CFR for 1000-5000 iterations (monitor exploitability)
+      3. Extract final strategy for all 169 preflop combos (or 1326 postflop combos)
+      4. Save raw strategy: /resources/solver_outputs/<node_key>_raw.json
+    - Parallelization: Solve independent spots in parallel (different stack buckets, boards, etc.)
+  
+  - Aggregation into Hand Buckets:
+    - Preflop: Map 169 combos → 10 hand buckets
+      - premium (AA/KK/QQ/AKs)
+      - strong (JJ/TT/AQs/AKo/KQs)
+      - mid_pair (99-66)
+      - low_pair (55-22)
+      - suited_broadway (AJs/ATs/KJs/KTs/QJs/QTs/JTs)
+      - offsuit_broadway (KQo-KTo/QJo/QTo/JTo)
+      - suited_connector (T9s-54s/A5s/A4s)
+      - Axs (remaining Axs)
+      - Axo (remaining Axo)
+      - suited_misc, offsuit_misc
+      - Method: Weighted average of combo strategies within each bucket
+    
+    - Postflop: Map 1326 combos → 12 hand buckets
+      - nuts, set, two_pair, over_pair, top_pair_strong, top_pair_weak, 
+        middle_pair, under_pair, combo_draw, strong_draw, weak_draw, air
+      - Method: Classify each combo by made hand + draw strength, average within bucket
+      - Precedence: made hands > draws (e.g., two_pair+weak_draw → two_pair)
+    
+    - Store aggregated strategy: dict[hand_bucket][action] = probability
+    - Save: /data/baseline_tables/<node_key>.json
+
+Table Storage Format:
+  - File Structure: /data/baseline_tables/<node_key>.json
+  - Node Key Format:
+    - Preflop: "PF|{position}|{facing}|{pot_class}|{stack_bucket}"
+      - Example: "PF|SB|Open_m|SRP|40-70bb"
+    - Postflop: "POST|{role}|{pot_class}|{street}|{line}|{board_bucket}|{stack_bucket}"
+      - Example: "POST|IP|SRP|Flop|vs_check|high_dry|40-70bb"
+  
+  - JSON Schema:
+    {
+      "node_key": "<full node key string>",
+      "metadata": {
+        "abstraction_version": "1.0",
+        "iterations": 1000,
+        "exploitability_bb_per_100": 0.05
+      },
+      "hand_buckets": {
+        "<bucket_name>": {
+          "fold": 0.0,
+          "check": 0.0,
+          "call": 0.0,
+          "limp": 0.0,          // preflop only
+          "open_s": 0.0,        // preflop only
+          "open_m": 0.0,        // preflop only
+          "open_l": 0.0,        // preflop only
+          "bet_s": 0.0,         // postflop only
+          "bet_p": 0.0,         // postflop only
+          "bet_jam": 0.0,
+          "3bet_s": 0.0,        // preflop only
+          "3bet_jam": 0.0,      // preflop only
+          "4bet_s": 0.0,        // preflop only
+          "4bet_jam": 0.0,      // preflop only
+          "raise_s": 0.0,       // postflop only
+          "raise_jam": 0.0,     // postflop only
+          "jam": 0.0
+        }
+      }
+    }
+  - Note: Only legal actions for that node will have non-zero probabilities
+
+Lookup API (Main Functions):
   - node_key(state) -> str 
-    - Purpose: produce the node key of the current state, to lookup the baseline table
-    - Output: node_key (not including hand_buckets since exploits are per node)
-      - Preflop node_key: PF | position(SB/BB) | facing(Unopened | Limped | Open[s/m/l] | 3Bet[s/jam] | 4Bet[s/jam]) | pot_class(SRP/3BP/4BP) | stack_bucket(0–40 | 40–70 | 70–120)
-      - Postflop node_key: POST | role(IP/OOP) | pot(SRP/3BP/4BP) | street(F/T/R) | line(vs_check | vs_bet[s|p|jam] | facing_raise[s/jam] | board_bucket)
+    - Purpose: Build node key from current game state to lookup baseline table
+    - Input: game state dict with position, stacks, pot, street, action_history, board, etc.
+    - Output: node_key string (dimensions vary by street)
+      - Preflop: "PF|{position}|{facing}|{pot_class}|{stack_bucket}"
+      - Postflop: "POST|{role}|{pot_class}|{street}|{line}|{board_bucket}|{stack_bucket}"
+    - Logic:
+      - Parse action history to determine facing state / line
+      - Bucket effective stacks (preflop: raw bb, postflop: SPR)
+      - Determine pot class from action history (SRP/3BP/4BP)
+  
   - preflop_hand_bucket(hand) -> str
     - Purpose: Classify hand into preflop hand buckets
-    - Output: Bucket label string (premium, strong, suited_connector, offsuit_misc, etc)
+    - Input: 2-card hand (e.g., "AsKh" or Hand object)
+    - Output: Bucket label from 10 buckets (premium, strong, mid_pair, suited_connector, etc.)
+    - Logic: Rank-first classification, then check suit, then special cases
+  
   - postflop_hand_bucket(hole, board, street) -> str 
-    - Purpose: Classify hand into postflop hand buckets (ranked for precedence e.g two_pair and weak_draw -> two_pair)
-  - policy(node_key, hand_bucket) -> dict[action, prob]
-    - Purpose: Fetch baseline action distribution from precomputed MCCFR strategy tables
-    - Output: Dictionary mapping legal abstract actions to probabilities summing to 1
+    - Purpose: Classify hand into postflop hand buckets
+    - Input: hole cards, board cards, current street
+    - Output: Bucket label from 12 buckets (nuts, set, two_pair, air, etc.)
+    - Precedence: Check made hands first (high to low), then draws, finally air
+    - Note: "nuts" is context-dependent (best possible hand on this board_bucket)
   
+  - board_bucket(board, street) -> str
+    - Purpose: Classify board texture for postflop aggregation
+    - Input: board cards, current street
+    - Output: Board bucket (high_dry, mid_dry, low_dry, paired, monotone, 2tone_connected, dynamic)
+    - Logic:
+      - Check for paired first
+      - Check for monotone (3+ same suit on flop, 4 on turn)
+      - Check connectivity (straights possible)
+      - Check high card (A/K = high, Q/J = mid, T or lower = low)
+      - Default to dynamic if multiple features present
   
+  - load_baseline_table(node_key) -> dict | None
+    - Purpose: Load precomputed baseline table from disk
+    - Input: node_key string
+    - Output: Full strategy dict with hand_buckets, or None if not found
+    - Caching: Keep frequently accessed tables in memory
+  
+  - query_policy(state, hand) -> dict[action, prob]
+    - Purpose: Main query function - fetch baseline action distribution
+    - Input: game state, player hand
+    - Steps:
+      1. Build node_key from state
+      2. Classify hand into hand_bucket
+      3. Load table for node_key
+      4. Retrieve strategy for hand_bucket
+      5. Filter illegal actions based on current state
+      6. Renormalize probabilities to sum to 1
+    - Output: Dictionary mapping legal actions to probabilities
+    - Example: {"fold": 0.2, "call": 0.5, "raise_s": 0.3}
+
+
     
