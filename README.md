@@ -97,15 +97,26 @@ Site Adapter:
       - sanity flags
 
 TexasSolver HU Baseline Decision Table:
-- Purpose: Generate GTO baseline strategies using TexasSolver engine, then provide efficient lookup
+- Purpose: Generate GTO baseline strategies, then provide efficient lookup
 - Pipeline: Configure → Solve → Aggregate → Store → Query
+- Note: TexasSolver ONLY supports postflop solving (requires board cards)
 
 Table Generation:
-  - Solver Configuration:
+  
+  - Preflop Strategy (Alternative Approach):
+    - TexasSolver does NOT support preflop solving
+    - Solution: Use pre-computed GTO preflop charts
+    - Sources:
+      - Published HU GTO charts (GTO Wizard, PokerStrategy, etc.)
+      - Simple analytical solutions (preflop trees are smaller)
+      - Rules-based ranges as fallback
+    - Map published ranges to your 10 preflop hand buckets
+    - Store in same format: /data/baseline_tables/PF|{position}|{facing}|{pot_class}|{stack_bucket}.json
+  
+  - Postflop Solver Configuration (TexasSolver):
     - Use TexasSolver CFR engine (MCCFR or DiscountedCFR)
-    - Iterations: target 1000+ iterations for convergence per spot
+    - Iterations: target 1000-2000 iterations for convergence per spot
     - Bet Sizing Abstractions:
-      - Preflop: limps, open[2.5bb/3.5bb/5bb], 3bet[8bb/jam], 4bet[20bb/jam]
       - Postflop: check, bet[50%pot/100%pot/jam], raise[2.5x/jam]
     - Stack Size Buckets: Generate separate trees for each effective stack bucket
       - 0-40bb (short-stack), 41-70bb (mid-stack), 71+bb (deep-stack)
@@ -113,23 +124,9 @@ Table Generation:
     - Static Rules Enforcement:
       - Preflop: capped at 4bet, no 5bet except jam
       - Postflop: 1 raise round per street max
+      - Jam enabled when SPR < threshold
   
-  - Preflop Game Tree Generation:
-    - Dimensions: Position × Facing State × Pot Class × Stack Bucket
-    - Generate solver tree for each combination:
-      Position: SB, BB
-      Facing State: Unopened, Limped, Open_s, Open_m, Open_l, 3Bet_s, 3Bet_jam, 4Bet_s, 4Bet_jam
-      Pot Class: SRP (unopened/limped/opens), 3BP (3bet spots), 4BP (4bet spots)
-      Stack Bucket: 0-40bb, 40-70bb, 70-120bb
-    - Example Trees to Solve:
-      - SB|Unopened|SRP|40-70bb → solve with [fold/limp/open_s/open_m/open_l]
-      - BB|Open_m|SRP|40-70bb → solve with [fold/call/3bet_s/3bet_jam]
-      - SB|3Bet_s|3BP|40-70bb → solve with [fold/call/4bet_s/4bet_jam]
-      - BB|4Bet_s|4BP|40-70bb → solve with [fold/call/jam]
-    - Total Preflop Trees: 2 positions × ~9 facing states × 3 stack buckets ≈ 54 trees
-      (some combinations invalid, e.g., BB can't face "Unopened")
-  
-  - Postflop Game Tree Generation:
+  - Postflop Game Tree Generation (TexasSolver):
     - Dimensions: Position × Pot Class × Street × Line × Board Bucket × Stack Bucket
     - Generate solver tree for each combination:
       Position: IP, OOP
@@ -148,16 +145,17 @@ Table Generation:
       - Sample 20-50 representative boards per board_bucket
       - Solve each, then average strategies across boards within bucket
   
-  - Solving Process:
-    - For each tree configuration:
+  - Solving Process (Postflop Only):
+    - For each postflop tree configuration:
       1. Build TexasSolver game tree with proper abstractions
-      2. Run CFR for 1000-5000 iterations (monitor exploitability)
-      3. Extract final strategy for all 169 preflop combos (or 1326 postflop combos)
-      4. Save raw strategy: /resources/solver_outputs/<node_key>_raw.json
-    - Parallelization: Solve independent spots in parallel (different stack buckets, boards, etc.)
+      2. Run CFR for 1000-2000 iterations (monitor exploitability)
+      3. Extract final strategy for 1326 hand combos
+      4. Save raw strategy: /data/solver_outputs/<node_key>_raw.json
+    - Parallelization: Solve independent spots in parallel (4-8 solves at once)
+    - Expected time: ~2000 postflop spots × 20 boards × 30-60s = 15-30 hours (8 parallel)
   
   - Aggregation into Hand Buckets:
-    - Preflop: Map 169 combos → 10 hand buckets
+    - Preflop: Convert GTO charts → 10 hand buckets
       - premium (AA/KK/QQ/AKs)
       - strong (JJ/TT/AQs/AKo/KQs)
       - mid_pair (99-66)
@@ -168,12 +166,15 @@ Table Generation:
       - Axs (remaining Axs)
       - Axo (remaining Axo)
       - suited_misc, offsuit_misc
-      - Method: Weighted average of combo strategies within each bucket
+      - Method: Take published GTO ranges, average by bucket, convert to action frequencies
     
-    - Postflop: Map 1326 combos → 12 hand buckets
+    - Postflop: Map TexasSolver output (1326 combos) → 12 hand buckets
       - nuts, set, two_pair, over_pair, top_pair_strong, top_pair_weak, 
         middle_pair, under_pair, combo_draw, strong_draw, weak_draw, air
-      - Method: Classify each combo by made hand + draw strength, average within bucket
+      - Method: 
+        1. Load raw TexasSolver strategies for all boards in bucket
+        2. Classify each combo by made hand + draw strength
+        3. Average strategies within each bucket across all boards
       - Precedence: made hands > draws (e.g., two_pair+weak_draw → two_pair)
     
     - Store aggregated strategy: dict[hand_bucket][action] = probability
