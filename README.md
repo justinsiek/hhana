@@ -25,18 +25,15 @@ Preflop:
   - Effective Stack Size Buckets (0-40bb, 40-70bb, 70-120bb)
   - Static Rules:
     - Raise Cap: preflop capped at 4bet, no 5bet except jam
-  - Hand Buckets
-    - premium (AA/KK/QQ/AKs)
-    - strong (JJ/TT/AQs/AKo/KQs)
-    - mid_pair (99-66)
-    - low_pair (55-22)
-    - suited_broadway (AJs, ATs, KJs, KTs, QJs, QTs, JTs)
-    - offsuit_broadway (KQo-KTo, QJo, QTo, JTo)
-    - suited_connector (T9s-54s, A5s, A4s)
-    - Axs (Axs not above)
-    - Axo (Axo not above)
-    - suited_misc
-    - offsuit_misc
+  - Hand Storage:
+    - Store exact combos (169 total) from GTO charts
+    - No bucketing preflop - use direct combo frequencies
+    - Examples: AA, KK, AKs, AKo, 72o, etc.
+  - Note on HU Ranges:
+    - HU ranges are significantly wider than 6-max/full-ring
+    - SB opens 80-100% of hands depending on stack depth
+    - BB defends 60-80%+ vs opens
+    - Most combos are played frequently (even weak offsuit hands)
 Postflop:
   - Position (IP / OOP)
   - Pot Class (SRP / 3BP / 4BP)
@@ -50,19 +47,32 @@ Postflop:
     - monotone (3 (flop) or 4 (turn) same suit)
     - 2tone_connected (2 suits, connected)
     - dynamic 
-  - Hand Buckets:
-    - nuts (high straight, nut/near nut flush, boat, quads)
-    - set 
-    - two_pair
-    - over_pair
-    - top_pair_strong (top pair with strong kicker)
-    - top_pair_weak (top pair weak kicker)
-    - middle_pair
-    - under_pair
-    - combo_draw (open ender/flush draw, maybe also draw + overcards)
-    - strong_draw (open ender/flush draw)
-    - weak_draw (gutshot / bdfd)
-    - air
+  - 2D Hand Buckets (24 buckets - Made Hand × Draw Strength):
+    - Made Hand Strength (6 levels):
+      0. air           - No pair, no made hand
+      1. weak_pair     - Bottom pair, underpair to board
+      2. medium_pair   - Middle pair, top pair weak kicker
+      3. strong_pair   - Top pair good kicker, overpair
+      4. two_pair      - Two pair, set
+      5. strong_made   - Straight+, flush, boat, quads
+    
+    - Draw Strength (4 levels):
+      0. no_draw       - No draw whatsoever
+      1. weak_draw     - Gutshot, backdoor flush/straight
+      2. strong_draw   - OESD or flush draw
+      3. combo_draw    - Multiple draws (OESD+FD, pair+draw)
+    
+    - Results in (made, draw) tuples: (0,2), (2,1), (3,0), etc.
+    - Total: 6 × 4 = 24 distinct strategy buckets
+    
+  - Why 2D Bucketing (Made + Draw)?
+    - Problem with pure equity: 50% equity flush draw ≠ 50% equity top pair
+      - Flush draw wants to check/call (realize equity cheaply, no showdown value now)
+      - Top pair wants to bet (has showdown value, protect equity, deny draws)
+    - Made hand strength determines showdown value and protection needs
+    - Draw strength determines realizability and desire for cheap cards
+    - 2D approach captures both dimensions of hand strength
+    - Still generalizes well (24 buckets vs 1326 combos)
   - Static Rules:
     - Raise Caps: 1 raise round per street
     - Jam enabled if stack pot ratio is small enough
@@ -70,48 +80,105 @@ Postflop:
 
 ## Technical Implementation Roadmap:
 
-Site Adapter:
-- Site adapter to connect bot to Replay Poker
-- Requirements:
-  - Data Capture:
-    - Detect turn start/end
-    - Detect position
-    - Detect opponent action (fold, check, call, bet, raise)
-      - Detect bet/raise size
-    - Detect stacks
-    - Detect hole cards 
-    - Detect board cards
-    - Detect street
-    - Detect pot size
-    - Optional: to_call, min_raise amounts
-  - Action Execution:
-    - Execute actions recieved from bot 
-      - Main difficulty here is with inputing custom raise sizes
-        - Workaround: only use buttons, not slider
-  - Shadow Mode
-    - For QA
-    - Reads state, builds node key, runs policy, picks action/size, but does NOT click
-    - Logs everything
-      - state
-      - node key
-      - sanity flags
+  ### Phase 1: State Reading and Logging
+  
+  #### Checkpoint 1.1: Basic Adapter - Read and Print State
+  Goal: Adapter can read game state from poker site and log it
+  Deliverables:
+  - Adapter connects to poker site (Replay Poker)
+  - Detects when game state changes
+  - On change, prints raw state to terminal
+  ```
+    === GAME STATE UPDATE ===
+    Position: BB
+    Stacks: Hero=50bb, Villain=48bb
+    Pot: 1.5bb
+    Street: preflop
+    Board: -
+    Hole Cards: Kh Qs
+    Action History: ["SB post 0.5bb", "BB post 1bb"]
+    To Act: Hero
+    Legal Actions: [fold, call, raise]
+  ```
 
-TexasSolver HU Baseline Decision Table:
-- Purpose: Generate GTO baseline strategies, then provide efficient lookup
-- Pipeline: Configure → Solve → Aggregate → Store → Query
-- Note: TexasSolver ONLY supports postflop solving (requires board cards)
+### Phase 2: Context Classification
+
+#### Checkpoint 2.1: Node Key Generation
+Goal: Generate and log node keys at each decision point
+Deliverables:
+- Implement build_node_key(state) -> str
+- Parse action history to determine facing state
+- Bucket stacks
+- Determine pot class
+- On turn, log node key alongside state:
+```
+  === DECISION POINT ===
+  Hand: KhQs
+  Node Key: PF|BB|Open_m|SRP|40-70bb
+  State: {...}
+```
+
+#### Checkpoint 2.2: Hand Classification
+Goal: Classify hands into buckets/combos
+Deliverables:
+- Implement normalize_hand_to_combo(hand) -> str (preflop)
+- Implement classify_made_hand(hand, board) -> int (postflop)
+- Implement classify_draw(hand, board) -> int (postflop)
+- Implement bucket_2d(hand, board) -> tuple (postflop)
+- Implement classify_board(board) -> str (board bucketing)
+- On turn, log hand classification, node key, state:
+```
+ === DECISION POINT ===
+  Hand: KhQs
+  Node Key: PF|BB|Open_m|SRP|40-70bb
+  Hand Bucket: KQo
+  State: {...}
+  ---
+  Hand: KhQs
+  Board: As 7d 2h
+  Node Key: POST|IP|SRP|Flop|vs_check|high_dry|40-70bb
+  Made Hand: 0 (air)
+  Draw: 1 (weak_draw - backdoor straight)
+  Hand Bucket: (0, 1)
+```
+
+### Phase 3: Baseline Strategy
+
+#### Checkpoint 3.1: Preflop GTO Chart Integration
+Goal: Load real preflop GTO strategies
+Deliverables:
+- Source/create GTO preflop charts for HU
+- Convert to your JSON format
+- Store in data/baseline_tables/
+- At every preflop situation, log baseline strategy:
+```
+  === DECISION POINT ===
+    Hand: KQo
+    Node Key: PF|BB|Open_m|SRP|40-70bb
+    Hand Bucket: KQo
+    Baseline Strategy: {"fold": 0.3, "call": 0.5, "3bet_s": 0.15, "3bet_jam": 0.05}
+```
 
 ## Table Generation:
   
-  - Preflop Strategy (Alternative Approach):
+  Key Design Decisions:
+  - Preflop: Store exact combo strategies (169 combos) from GTO charts (no solver, no bucketing)
+  - Postflop: Use 2D buckets (6 made × 4 draw = 24 buckets) + TexasSolver CFR
+  - Rationale:
+    - Preflop: GTO charts give exact frequencies, storage is trivial (~350KB total), no reason to bucket
+    - Postflop: 2D bucketing captures both showdown value AND draw potential while keeping storage manageable
+  
+  - Preflop Strategy (GTO Charts - No Solving):
     - TexasSolver does NOT support preflop solving
-    - Solution: Use pre-computed GTO preflop charts
+    - Solution: Use pre-computed GTO preflop charts directly
     - Sources:
-      - Published HU GTO charts (GTO Wizard, PokerStrategy, etc.)
+      - Published HU GTO charts (GTO Wizard, PokerStrategy, Nash Equilibrium tables)
       - Simple analytical solutions (preflop trees are smaller)
       - Rules-based ranges as fallback
-    - Map published ranges to your 10 preflop hand buckets
-    - Store in same format: /data/baseline_tables/PF|{position}|{facing}|{pot_class}|{stack_bucket}.json
+    - Store exact combo frequencies (all 169 combos)
+    - No bucketing needed - charts already provide per-combo strategies
+    - Storage: ~7KB per node × 50 nodes = ~350KB total (negligible)
+    - Format: /data/baseline_tables/PF|{position}|{facing}|{pot_class}|{stack_bucket}.json
   
   - Postflop Solver Configuration (TexasSolver):
     - Use TexasSolver CFR engine (MCCFR or DiscountedCFR)
@@ -154,30 +221,32 @@ TexasSolver HU Baseline Decision Table:
     - Parallelization: Solve independent spots in parallel (4-8 solves at once)
     - Expected time: ~2000 postflop spots × 20 boards × 30-60s = 15-30 hours (8 parallel)
   
-  - Aggregation into Hand Buckets:
-    - Preflop: Convert GTO charts → 10 hand buckets
-      - premium (AA/KK/QQ/AKs)
-      - strong (JJ/TT/AQs/AKo/KQs)
-      - mid_pair (99-66)
-      - low_pair (55-22)
-      - suited_broadway (AJs/ATs/KJs/KTs/QJs/QTs/JTs)
-      - offsuit_broadway (KQo-KTo/QJo/QTo/JTo)
-      - suited_connector (T9s-54s/A5s/A4s)
-      - Axs (remaining Axs)
-      - Axo (remaining Axo)
-      - suited_misc, offsuit_misc
-      - Method: Take published GTO ranges, average by bucket, convert to action frequencies
+  - Strategy Storage:
+    - Preflop: Direct storage of exact combo frequencies (no aggregation)
+      - Load GTO chart for each spot
+      - Store all 169 combos with their exact action frequencies
+      - Example from chart: "AA: Open 100% (70% large, 30% medium)"
+      - Store as: "AA": {"fold": 0.0, "open_m": 0.3, "open_l": 0.7}
+      - No bucketing, no averaging, no information loss
     
-    - Postflop: Map TexasSolver output (1326 combos) → 12 hand buckets
-      - nuts, set, two_pair, over_pair, top_pair_strong, top_pair_weak, 
-        middle_pair, under_pair, combo_draw, strong_draw, weak_draw, air
+    - Postflop: Map TexasSolver output (1326 combos) → 24 2D buckets
+      - Buckets: (made_hand: 0-5, draw: 0-3) = 24 total combinations
       - Method: 
-        1. Load raw TexasSolver strategies for all boards in bucket
-        2. Classify each combo by made hand + draw strength
-        3. Average strategies within each bucket across all boards
-      - Precedence: made hands > draws (e.g., two_pair+weak_draw → two_pair)
+        1. For each board in board_bucket (20-50 boards sampled):
+           a. Load raw TexasSolver strategies (1326 combos × actions)
+           b. Classify each combo into 2D bucket:
+              - Evaluate made hand strength (0-5): air → strong_made
+              - Evaluate draw strength (0-3): no_draw → combo_draw
+              - Example: AhQh on Kc7d2h = (made=0 air, draw=2 strong_draw) = bucket (0,2)
+              - Example: KhQs on Kc7d2h = (made=3 strong_pair, draw=0 no_draw) = bucket (3,0)
+           c. Group combos by 2D bucket and average strategies within bucket
+        2. Average 2D-bucketed strategies across all boards in board_bucket
+      - Result: Each node gets 24 strategies (one per (made, draw) combination)
+      - Advantage: Captures both showdown value AND draw potential
     
-    - Store aggregated strategy: dict[hand_bucket][action] = probability
+    - Store strategies: 
+      - Preflop: dict[combo][action] = probability (169 combos, no aggregation)
+      - Postflop: dict[(made, draw)][action] = probability (24 buckets, aggregated)
     - Save: /data/baseline_tables/<node_key>.json
 
 ## Table Storage Format:
@@ -188,37 +257,55 @@ TexasSolver HU Baseline Decision Table:
     - Postflop: "POST|{role}|{pot_class}|{street}|{line}|{board_bucket}|{stack_bucket}"
       - Example: "POST|IP|SRP|Flop|vs_check|high_dry|40-70bb"
   
-  - JSON Schema:
+  - JSON Schema (Preflop):
     {
-      "node_key": "<full node key string>",
+      "node_key": "PF|SB|Unopened|SRP|40-70bb",
       "metadata": {
         "abstraction_version": "1.0",
-        "iterations": 1000,
-        "exploitability_bb_per_100": 0.05
+        "street": "preflop",
+        "source": "GTO Wizard HU 100bb"
       },
-      "hand_buckets": {
-        "<bucket_name>": {
-          "fold": 0.0,
-          "check": 0.0,
-          "call": 0.0,
-          "limp": 0.0,          // preflop only
-          "open_s": 0.0,        // preflop only
-          "open_m": 0.0,        // preflop only
-          "open_l": 0.0,        // preflop only
-          "bet_s": 0.0,         // postflop only
-          "bet_p": 0.0,         // postflop only
-          "bet_jam": 0.0,
-          "3bet_s": 0.0,        // preflop only
-          "3bet_jam": 0.0,      // preflop only
-          "4bet_s": 0.0,        // preflop only
-          "4bet_jam": 0.0,      // preflop only
-          "raise_s": 0.0,       // postflop only
-          "raise_jam": 0.0,     // postflop only
-          "jam": 0.0
-        }
+      "combos": {
+        "AA": {"fold": 0.0, "limp": 0.0, "open_s": 0.0, "open_m": 0.3, "open_l": 0.7},
+        "KK": {"fold": 0.0, "limp": 0.0, "open_s": 0.0, "open_m": 0.4, "open_l": 0.6},
+        "QQ": {"fold": 0.0, "limp": 0.0, "open_s": 0.0, "open_m": 0.5, "open_l": 0.5},
+        "AKs": {"fold": 0.0, "limp": 0.0, "open_s": 0.1, "open_m": 0.6, "open_l": 0.3},
+        "AKo": {"fold": 0.0, "limp": 0.0, "open_s": 0.2, "open_m": 0.7, "open_l": 0.1},
+        "72o": {"fold": 0.85, "limp": 0.15, "open_s": 0.0, "open_m": 0.0, "open_l": 0.0},
+        ... // All 169 combos
       }
     }
+  
+  - JSON Schema (Postflop):
+    {
+      "node_key": "POST|IP|SRP|Flop|vs_check|high_dry|40-70bb",
+      "metadata": {
+        "abstraction_version": "1.0",
+        "iterations": 2000,
+        "exploitability_bb_per_100": 0.05,
+        "boards_solved": 20,
+        "street": "postflop"
+      },
+      "hand_buckets": {
+        "(0,0)": {"fold": 0.9, "check": 0.1, "bet_s": 0.0, "bet_p": 0.0},
+        "(0,1)": {"fold": 0.5, "check": 0.4, "bet_s": 0.1, "bet_p": 0.0},
+        "(0,2)": {"fold": 0.2, "check": 0.3, "bet_s": 0.4, "bet_p": 0.1},
+        "(0,3)": {"fold": 0.1, "check": 0.2, "bet_s": 0.5, "bet_p": 0.2},
+        "(1,0)": {"fold": 0.3, "check": 0.5, "bet_s": 0.2, "bet_p": 0.0},
+        "(1,2)": {"fold": 0.1, "check": 0.3, "bet_s": 0.4, "bet_p": 0.2},
+        "(2,0)": {"fold": 0.0, "check": 0.3, "bet_s": 0.5, "bet_p": 0.2},
+        "(2,1)": {"fold": 0.0, "check": 0.2, "bet_s": 0.5, "bet_p": 0.3},
+        "(3,0)": {"fold": 0.0, "check": 0.2, "bet_s": 0.3, "bet_p": 0.5},
+        "(3,1)": {"fold": 0.0, "check": 0.1, "bet_s": 0.2, "bet_p": 0.7},
+        "(4,0)": {"fold": 0.0, "check": 0.1, "bet_s": 0.1, "bet_p": 0.8},
+        "(5,0)": {"fold": 0.0, "check": 0.05, "bet_s": 0.05, "bet_p": 0.9}
+      }
+    }
+  - Note: Postflop bucket format is "(made_hand, draw)" where:
+    - made_hand: 0=air, 1=weak_pair, 2=medium_pair, 3=strong_pair, 4=two_pair, 5=strong_made
+    - draw: 0=no_draw, 1=weak_draw, 2=strong_draw, 3=combo_draw
   - Note: Only legal actions for that node will have non-zero probabilities
+  - Note: Preflop stores exact combos (169), postflop uses 2D (made, draw) buckets (24)
 
 ## Lookup API (Main Functions):
   - node_key(state) -> str 
@@ -232,18 +319,38 @@ TexasSolver HU Baseline Decision Table:
       - Bucket effective stacks (preflop: raw bb, postflop: SPR)
       - Determine pot class from action history (SRP/3BP/4BP)
   
-  - preflop_hand_bucket(hand) -> str
-    - Purpose: Classify hand into preflop hand buckets
-    - Input: 2-card hand (e.g., "AsKh" or Hand object)
-    - Output: Bucket label from 10 buckets (premium, strong, mid_pair, suited_connector, etc.)
-    - Logic: Rank-first classification, then check suit, then special cases
+  - normalize_hand_to_combo(hand) -> str
+    - Purpose: Convert specific hand to combo notation for preflop lookup
+    - Input: 2-card hand (e.g., "AsKh", "7c2d")
+    - Output: Combo string (e.g., "AKs", "72o", "77")
+    - Logic:
+      - If paired: return rank pair (e.g., "AA", "77")
+      - If suited: return high-low + 's' (e.g., "AKs", "T9s")
+      - If offsuit: return high-low + 'o' (e.g., "AKo", "72o")
   
-  - postflop_hand_bucket(hole, board, street) -> str 
-    - Purpose: Classify hand into postflop hand buckets
-    - Input: hole cards, board cards, current street
-    - Output: Bucket label from 12 buckets (nuts, set, two_pair, air, etc.)
-    - Precedence: Check made hands first (high to low), then draws, finally air
-    - Note: "nuts" is context-dependent (best possible hand on this board_bucket)
+  - classify_made_hand(hole, board) -> int
+    - Purpose: Classify made hand strength (0-5)
+    - Input: hole cards, board cards
+    - Output: 0=air, 1=weak_pair, 2=medium_pair, 3=strong_pair, 4=two_pair, 5=strong_made
+    - Logic:
+      - Evaluate hand (using poker evaluator library)
+      - Check position relative to board (top pair? middle pair? overpair?)
+      - Consider kicker strength for pairs
+  
+  - classify_draw(hole, board) -> int
+    - Purpose: Classify draw strength (0-3)
+    - Input: hole cards, board cards
+    - Output: 0=no_draw, 1=weak_draw, 2=strong_draw, 3=combo_draw
+    - Logic:
+      - Count flush outs (suited cards, backdoor possibilities)
+      - Count straight outs (OESD, gutshot, backdoor)
+      - Combine with made hand (pair+draw = combo?)
+  
+  - bucket_2d(hole, board) -> tuple[int, int]
+    - Purpose: Get full 2D bucket for hand
+    - Input: hole cards, board cards
+    - Output: (made_hand, draw) tuple, e.g., (3, 0) for strong pair no draw
+    - Simple wrapper: return (classify_made_hand(hole, board), classify_draw(hole, board))
   
   - board_bucket(board, street) -> str
     - Purpose: Classify board texture for postflop aggregation
@@ -267,13 +374,21 @@ TexasSolver HU Baseline Decision Table:
     - Input: game state, player hand
     - Steps:
       1. Build node_key from state
-      2. Classify hand into hand_bucket
-      3. Load table for node_key
-      4. Retrieve strategy for hand_bucket
-      5. Filter illegal actions based on current state
-      6. Renormalize probabilities to sum to 1
+      2. If preflop:
+         - Normalize hand to combo: normalize_hand_to_combo("AsKh") → "AKs"
+         - Load table for node_key
+         - Direct lookup: strategy = table["combos"]["AKs"]
+         - No bucketing, no classification needed
+      3. If postflop:
+         - Classify hand into 2D bucket: (made_hand, draw)
+         - Example: bucket_2d("AhQh", "Kc7d2h") → (0, 2) for "air + strong draw"
+         - Example: bucket_2d("KhQs", "Kc7d2h") → (3, 0) for "strong pair + no draw"
+         - Load table for node_key
+         - Retrieve strategy from table["hand_buckets"]["(made,draw)"]
+      4. Filter illegal actions based on current state
+      5. Renormalize probabilities to sum to 1
     - Output: Dictionary mapping legal actions to probabilities
-    - Example: {"fold": 0.2, "call": 0.5, "raise_s": 0.3}
+    - Example: {"fold": 0.0, "check": 0.2, "bet_p": 0.8}
 
 
     
