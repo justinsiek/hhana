@@ -17,7 +17,6 @@ class StateParser:
     def __init__(self, hero_user_id: int):
         self.hero_user_id = hero_user_id
         self.state = GameState(hero_user_id=hero_user_id)
-        self.last_sequence = -1
     
     def parse_message(self, message_text: str) -> Optional[GameState]:
         """
@@ -132,8 +131,6 @@ class StateParser:
                     player.stack = p_data.get("stack", player.stack)
                     player.state = p_data.get("state", "ask")
         
-        # Update pot (sum of bets)
-        self.state.current_bets = sum(p.bet for p in self.state.players)
         self.state.minimum_raise = update.get("minimumRaise", 2)
         
         # Record action
@@ -190,9 +187,6 @@ class StateParser:
             self.state.action_history.append(f"Seat{seat_id} bets {chips}bb")
         elif action == "fold":
             self.state.action_history.append(f"Seat{seat_id} folds")
-        
-        # Update pot
-        self.state.current_bets = sum(p.bet for p in self.state.players)
     
     def _handle_community_cards(self, update: Dict):
         """Handle dealCommunityCards - flop/turn/river"""

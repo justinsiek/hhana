@@ -11,14 +11,14 @@ AUTH_PATH = Path(__file__).with_name("auth.json")
 REPLAY_URL = "https://www.casino.org/replaypoker/"
 
 
-def setup_console_listener(page: Page, name: str, adapter: PokerAdapter) -> CDPSession:
+def setup_console_listener(page: Page, adapter: PokerAdapter) -> CDPSession:
     """Set up CDP console listener for a page"""
     cdp = page.context.new_cdp_session(page)
     cdp.send("Runtime.enable")
     cdp.send("Log.enable")
     
     # Create listener with adapter hook
-    listener = ConsoleListener(cdp, name, adapter)
+    listener = ConsoleListener(cdp, "Table", adapter)
     
     # Attach event handlers
     cdp.on("Runtime.consoleAPICalled", listener.on_console_api_called)
@@ -28,7 +28,6 @@ def setup_console_listener(page: Page, name: str, adapter: PokerAdapter) -> CDPS
 
 
 def main() -> None:
-    # Create adapter (will auto-detect hero_user_id from auth message)
     adapter = PokerAdapter()
     
     print("\n" + "="*70)
@@ -37,21 +36,17 @@ def main() -> None:
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-        context = browser.new_context(storage_state=str(AUTH_PATH) if AUTH_PATH.exists() else None)
-        cdp_sessions = []
         
-        # Auto-attach listeners to new pages (in case tables do open in popups)
-        def handle_page(page: Page):
-            cdp_sessions.append(setup_console_listener(page, f"Page-{len(context.pages)}", adapter))
+        # Load auth state if available
+        storage_state = str(AUTH_PATH) if AUTH_PATH.exists() else None
+        context = browser.new_context(storage_state=storage_state)
         
-        context.on("page", handle_page)
-        
-        # Open main page
+        # Open main page and attach listener
         page = context.new_page()
+        cdp = setup_console_listener(page, adapter)
         page.goto(REPLAY_URL, wait_until="domcontentloaded")
         
-        print("Monitoring poker table...")
-        print("(Game state will be displayed when it's your turn to act)\n")
+        print("Monitoring poker table...\n")
         
         # Keep running
         try:
@@ -60,11 +55,10 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\n✓ Shutting down...\n")
         finally:
-            for cdp in cdp_sessions:
-                try:
-                    cdp.detach()
-                except:
-                    pass
+            try:
+                cdp.detach()
+            except:
+                pass
 
 
 if __name__ == "__main__":

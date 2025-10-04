@@ -1,5 +1,6 @@
 """Main poker adapter - processes console messages into game state"""
 
+import re
 from typing import Optional
 from parser import StateParser
 from state import GameState
@@ -15,7 +16,6 @@ class PokerAdapter:
     def __init__(self, hero_user_id: Optional[int] = None):
         self.hero_user_id = hero_user_id
         self.parser: Optional[StateParser] = None
-        self.authenticated = False
         self.last_logged_state = None
     
     def on_console_message(self, message_type: str, message_text: str):
@@ -36,20 +36,18 @@ class PokerAdapter:
                     self.hero_user_id = int(user_id_str)
                     self.parser = StateParser(self.hero_user_id)
                     print(f"\n✓ Authenticated as User ID: {self.hero_user_id}\n", flush=True)
-            except Exception as e:
+            except Exception:
                 pass
         
         # Parse UpdateQueue messages
         if self.parser and "[UpdateQueue]" in message_text:
             # Simple debug: show what action is being processed
             try:
-                import re
-                # Match JavaScript object notation: action: "value" or action:"value"
                 match = re.search(r'action\s*:\s*"?(\w+)"?', message_text)
                 if match:
                     action = match.group(1)
                     print(f"[Processing: {action}]", flush=True)
-            except:
+            except Exception:
                 pass
             
             try:

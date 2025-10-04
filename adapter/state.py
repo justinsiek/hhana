@@ -20,7 +20,7 @@ class GameState:
     """Complete game state at a decision point"""
     # Hand info
     hand_id: Optional[int] = None
-    street: str = "preflop"  # "preFlop", "flop", "turn", "river"
+    street: str = "preflop"  # "preflop", "flop", "turn", "river"
     
     # Table info
     dealer_seat: Optional[int] = None
@@ -29,7 +29,6 @@ class GameState:
     
     # Pot and betting
     pot: int = 0
-    current_bets: int = 0
     minimum_raise: int = 2
     
     # Cards
