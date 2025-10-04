@@ -84,6 +84,7 @@ Postflop:
   
   #### Checkpoint 1.1: Basic Adapter - Read and Print State
   Goal: Adapter can read game state from poker site and log it
+
   Deliverables:
   - Adapter connects to poker site (Replay Poker)
   - Detects when game state changes
@@ -105,6 +106,7 @@ Postflop:
 
 #### Checkpoint 2.1: Node Key Generation
 Goal: Generate and log node keys at each decision point
+
 Deliverables:
 - Implement build_node_key(state) -> str
 - Parse action history to determine facing state
@@ -120,6 +122,7 @@ Deliverables:
 
 #### Checkpoint 2.2: Hand Classification
 Goal: Classify hands into buckets/combos
+
 Deliverables:
 - Implement normalize_hand_to_combo(hand) -> str (preflop)
 - Implement classify_made_hand(hand, board) -> int (postflop)
@@ -146,6 +149,7 @@ Deliverables:
 
 #### Checkpoint 3.1: Preflop GTO Chart Integration
 Goal: Load real preflop GTO strategies
+
 Deliverables:
 - Source/create GTO preflop charts for HU
 - Convert to your JSON format
