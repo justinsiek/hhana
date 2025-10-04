@@ -1,11 +1,11 @@
-hhana (Hand History Analysis & Node Aggregation)
+# hhana (Hand History Analysis & Node Aggregation)
 
-##Summary
+## Summary
 
 Build a poker bot that uses TexasSolver decision table as a baseline, taking into account exploit signals generated
 through hand history exploits (more info in How Actions Are Determined section)
 
-##How Actions Are Determined:
+## How Actions Are Determined:
 
 baseline decision table mix = π0(a|node,hand)
 E(a) = exploit signal
@@ -68,7 +68,7 @@ Postflop:
     - Jam enabled if stack pot ratio is small enough
 
 
-##Technical Implementation Roadmap:
+## Technical Implementation Roadmap:
 
 Site Adapter:
 - Site adapter to connect bot to Replay Poker
@@ -101,7 +101,7 @@ TexasSolver HU Baseline Decision Table:
 - Pipeline: Configure → Solve → Aggregate → Store → Query
 - Note: TexasSolver ONLY supports postflop solving (requires board cards)
 
-Table Generation:
+## Table Generation:
   
   - Preflop Strategy (Alternative Approach):
     - TexasSolver does NOT support preflop solving
@@ -180,7 +180,7 @@ Table Generation:
     - Store aggregated strategy: dict[hand_bucket][action] = probability
     - Save: /data/baseline_tables/<node_key>.json
 
-Table Storage Format:
+## Table Storage Format:
   - File Structure: /data/baseline_tables/<node_key>.json
   - Node Key Format:
     - Preflop: "PF|{position}|{facing}|{pot_class}|{stack_bucket}"
@@ -220,7 +220,7 @@ Table Storage Format:
     }
   - Note: Only legal actions for that node will have non-zero probabilities
 
-Lookup API (Main Functions):
+## Lookup API (Main Functions):
   - node_key(state) -> str 
     - Purpose: Build node key from current game state to lookup baseline table
     - Input: game state dict with position, stacks, pot, street, action_history, board, etc.
