@@ -4,13 +4,14 @@ import re
 from typing import Optional
 from parser import StateParser
 from state import GameState
+from node_builder import build_node_key
 
 
 class PokerAdapter:
     """
     Adapter that processes browser console messages and maintains game state.
     
-    Current Status: Checkpoint 1.1 - State reading and logging
+    Current Status: Checkpoint 2.1/2.2 - Node key generation and board classification
     """
     
     def __init__(self, hero_user_id: Optional[int] = None):
@@ -87,6 +88,14 @@ class PokerAdapter:
         else:
             print("=== GAME STATE UPDATE ===", flush=True)
         print("="*70, flush=True)
+        
+        # Show node key only at decision points (Checkpoint 2.1/2.2)
+        if is_decision_point:
+            try:
+                node_key = build_node_key(state)
+                print(f"Node Key: {node_key}", flush=True)
+            except Exception as e:
+                print(f"Node Key: [Error: {e}]", flush=True)
         
         # Show who's turn it is
         if state.current_player_seat == state.hero_seat_id:
